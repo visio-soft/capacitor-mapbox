@@ -6,7 +6,7 @@ import MapboxCoreNavigation
 import MapboxNavigation
 
 struct Location: Codable {
-    var _id: Int = 0
+    var _id: String = ""
     var longitude: Double = 0.0
     var latitude: Double = 0.0
     var when: String = ""
@@ -16,11 +16,18 @@ var lastLocation: Location?;
 var locationHistory: NSMutableArray?;
 var routes = [NSDictionary]();
 
+func getNowString() -> String {
+    let date = Date()
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ"
+    return formatter.string(from: date);
+}
 @objc(CapacitorMapboxNavigationPlugin)
-public class CapacitorMapboxNavigationPlugin: CAPPlugin {
+public class CapacitorMapboxNavigationPlugin: CAPPlugin, NavigationViewControllerDelegate {
    
     @objc override public func load() {
-        // Todo
         // Called when the plugin is first constructed in the bridge
         locationHistory = NSMutableArray();
         NotificationCenter.default.addObserver(self, selector: #selector(progressDidChange(notification:)), name: .routeControllerProgressDidChange, object: nil)
@@ -47,20 +54,11 @@ public class CapacitorMapboxNavigationPlugin: CAPPlugin {
             let lastLocationJsonData = try jsonEncoder.encode(lastLocation)
             let lastLocationJson = String(data: lastLocationJsonData, encoding: String.Encoding.utf8) ?? ""
             
-//            self.bridge.triggerWindowJSEvent(eventName: "location_updated", data: String(format: "{lastLocation: %@, locationHistory:  %@}", lastLocationJson, locationHistoryJson))
+            bridge?.triggerWindowJSEvent(eventName: "location_updated", data: String(format: "{lastLocation: %@, locationHistory:  %@}", lastLocationJson, locationHistoryJson))
             
         } catch {
             print("Error: Json Parsing Error");
         }
-    }
-
-    @objc func echo(_ call: CAPPluginCall) {
-        
-        let value = call.getString("value") ?? ""
-       
-        call.success([
-            "value": value
-        ])
     }
     
     @objc func history(_ call: CAPPluginCall) {
@@ -94,7 +92,6 @@ public class CapacitorMapboxNavigationPlugin: CAPPlugin {
                         waypoints.append(Waypoint(coordinate: CLLocationCoordinate2DMake(route["latitude"] as! CLLocationDegrees, route["longtitude"] as! CLLocationDegrees)))
                 }
         
-        let mapType = call.getString("mapType") ?? "mapbox://styles/mapbox/satellite-streets-v9"
         let isSimulate = call.getBool("simulating") ?? false
 
         let routeOptions = NavigationRouteOptions(waypoints: waypoints, profileIdentifier: .automobile)
@@ -105,34 +102,33 @@ public class CapacitorMapboxNavigationPlugin: CAPPlugin {
                 case .failure(let error):
                     print(error.localizedDescription)
                 case .success(let response):
-                    guard let self = self else { return }
+                    guard let route = response.routes?.first, let strongSelf = self else {
+                        return
+                    }
                     
-                let viewController = NavigationViewController(for: response, routeIndex: 0, routeOptions: routeOptions)
+                    let navigationService = MapboxNavigationService(routeResponse: response, routeIndex: 0, routeOptions: routeOptions, simulating: isSimulate ? .always : .never)
+                    let navigationOptions = NavigationOptions(navigationService: navigationService)
+                    
+                    let viewController = NavigationViewController(for: response, routeIndex: 0, routeOptions: routeOptions, navigationOptions: navigationOptions)
                     viewController.modalPresentationStyle = .fullScreen
                     viewController.waypointStyle = .extrudedBuilding;
-//                    viewController.delegate = self;
+                    viewController.delegate = strongSelf;
                     DispatchQueue.main.async {
-                          //For ipad
-//                        self?.setCenteredPopover(viewController)
-                        self.bridge?.viewController?.present(viewController, animated: true, completion: nil)
+                        self?.setCenteredPopover(viewController)
+                        self?.bridge?.viewController?.present(viewController, animated: true, completion: nil)
                     }
             }
         }
         
-        call.success()
+        call.resolve()
     }
-}
-
-extension CapacitorMapboxNavigation: NavigationViewControllerDelegate {
     
-    //TODO bridge has issue with event binding
-    // Show an alert when arriving at the waypoint and wait until the user to start next leg.
     public func navigationViewController(_ navigationViewController: NavigationViewController, didArriveAt waypoint: Waypoint) -> Bool {
         
         let jsonEncoder = JSONEncoder()
         do {
             var minDistance: CLLocationDistance = 0;
-            var locationId = 0;
+            var locationId: String = "";
             for (i, route) in routes.enumerated() {
                 let location = route["location"] as! NSArray;
                 let coord1 = CLLocation(latitude: location[1] as! CLLocationDegrees, longitude: location[0] as! CLLocationDegrees)
@@ -142,30 +138,23 @@ extension CapacitorMapboxNavigation: NavigationViewControllerDelegate {
                 
                 if (i == 0 || distance < minDistance) {
                     minDistance = distance;
-                    locationId = route["_id"] as! Int;
+                    locationId = route["_id"] as! String;
                 }
             }
             let loc = Location(_id: locationId, longitude: waypoint.coordinate.longitude, latitude: waypoint.coordinate.latitude, when: getNowString());
             let locationJsonData = try jsonEncoder.encode(loc)
             let locationJson = String(data: locationJsonData, encoding: String.Encoding.utf8) ?? ""
-//            self.bridge?.triggerWindowJSEvent(eventName: "arrived", data: locationJson);
+
+            self.bridge?.triggerWindowJSEvent(eventName: "arrived", data: locationJson);
         } catch {
-//            self.bridge.triggerWindowJSEvent(eventName: "arrived");
+            self.bridge?.triggerWindowJSEvent(eventName: "arrived");
         }
         return true
     }
     
     public func navigationViewControllerDidDismiss(_ navigationViewController: NavigationViewController, byCanceling canceled: Bool) {
-//        self.bridge.triggerWindowJSEvent(eventName: "navigation_closed");
+        self.bridge?.triggerWindowJSEvent(eventName: "navigation_closed");
         navigationViewController.dismiss(animated: true);
     }
 }
 
-func getNowString() -> String {
-    let date = Date()
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = TimeZone(secondsFromGMT: 0)
-    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZZZZZ"
-    return formatter.string(from: date);
-}
